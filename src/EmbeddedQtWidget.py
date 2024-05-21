@@ -161,7 +161,7 @@ class MyCustomWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super(MyCustomWidget, self).__init__(parent)
         self.bodyBtn = QtWidgets.QPushButton()  # Remove text if not needed
-        icon = QtGui.QIcon("src/resource/icons8-search-100.png")  # Update the path to your icon
+        icon = QtGui.QIcon("Inertia_Report_Python/src/resource/icons8-search-100.pngsrc/resource/icons8-search-100.png")  # Update the path to your icon
         self.bodyBtn.setIcon(icon)
         #self.btn_go.setIconSize(QtGui.QSize(32, 32))  # Optional: Adjust size as needed
         
@@ -534,9 +534,11 @@ def setup_and_connect_nodes(graph, DefaultDummyData, initial_y=100):
 
                 # Add 'In Force' ports
                 if number_of_Inforces > 0:
-                    for i in range(number_of_Inforces):
-                        port_name = f"InForce_{i+1}"
-                        body_node.add_input(port_name)
+                    for inforce in body.get("InForces", []):
+
+
+                        in_port_name = f" IN - {inforce['force_name']}"
+                        body_node.add_input(in_port_name)
                 else:
                     # Add a default 'In Force' port if there are no incoming forces
                     body_node.add_input("Default_InForce")
@@ -544,7 +546,7 @@ def setup_and_connect_nodes(graph, DefaultDummyData, initial_y=100):
                 # Add 'Out Force' ports based on the number of outgoing forces
                 if number_of_Outforces > 0:
                     for force in body.get("OutForces", []):
-                        outforceName = force['force_name']
+                        outforceName = f"""  Out - {force['force_name']}"""
                         body_node.add_output(outforceName)
                 else:
                      body_node.add_output("Default_OutForce")
