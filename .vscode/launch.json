@@ -1,0 +1,8 @@
+{
+    "name": "Python: Run Main as Module",
+    "type": "python",
+    "request": "launch",
+    "module": "src.main",
+    "console": "integratedTerminal",
+    "cwd": "${workspaceFolder}"
+}
