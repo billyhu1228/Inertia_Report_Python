@@ -621,12 +621,14 @@ def setup_and_connect_nodes(graph, DefaultDummyData, initial_y=100):
         
                 # Add input and output ports
                 for inforce in body.get("InForces", []):
-                    in_port_name = f"IN - {inforce['force_name']}"
+                    #in_port_name = f"IN - {inforce['force_name']}"
+                    in_port_name = f"IN -"
                     body_node.add_input(in_port_name, painter_func=draw_triangle_port)
                 
 
                 for force in body.get("OutForces", []):
-                    out_port_name = f"Out - {force['force_name']}"
+                    #out_port_name = f"Out - {force['force_name']}"
+                    out_port_name = f"Out -"
                     body_node.add_output(out_port_name)
 
                 # Adjust vertical position for next node
