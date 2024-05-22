@@ -1,11 +1,13 @@
 from queue import Full
 from Qt import QtCore, QtWidgets # type: ignore
-from NodeGraphQt import NodeGraph, BaseNode,NodeBaseWidget,NodesPaletteWidget
+from NodeGraphQt import NodeGraph, BaseNode,NodeBaseWidget,NodesPaletteWidget,BaseNodeCircle
 from NodeGraphQt.constants import PipeLayoutEnum
 import catia
 from catia.catia import CatiaApp
 import json
 from PyQt5 import QtWidgets, QtGui
+from PyQt5.QtWidgets import QGraphicsItem
+from PyQt5.QtCore import QRectF, QPointF
 
 
 
@@ -165,8 +167,15 @@ class MyCustomWidget(QtWidgets.QWidget):
         self.bodyBtn.setIcon(icon)
         #self.btn_go.setIconSize(QtGui.QSize(32, 32))  # Optional: Adjust size as needed
         
+           # Initialize the additional details widget but don't add to layout yet
+        self.massDetail = QtWidgets.QLabel("Additional Details Here")
+       
+        
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(self.bodyBtn)
+
+   
+        
 
 
           # Second button setup
@@ -175,6 +184,8 @@ class MyCustomWidget(QtWidgets.QWidget):
         self.springBtn.setIcon(icon_second)
         layout.addWidget(self.springBtn)
         #self.springBtn.setIconSize(QtGui.QSize(32, 32))  # Optional: Adjust size as needed
+
+        self.MassDetails_visible = False  # Track visibility state
 
 
 
@@ -197,16 +208,11 @@ class NodeWidgetWrapper(NodeBaseWidget):
 
 
 
+      
+
+
+
         #First Check from the DummyDate to see if there is mass in there 
-
-
-
-
-
-
-
-
-
 
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
             nominal, minimum, maximum = dialog.get_values()
@@ -250,7 +256,7 @@ class MyNode(BaseNode):
     __identifier__ = 'io.github.jchanvfx'
 
     # set the initial default node name.
-    NODE_NAME = 'Inertia'
+    NODE_NAME = 'Body'
 
     def __init__(self):
         super(MyNode, self).__init__()
@@ -259,6 +265,19 @@ class MyNode(BaseNode):
         self.add_custom_widget(node_widget, tab='Custom')
 
 
+class MyCircleNode(BaseNodeCircle):
+    """
+    Example node.
+    """
+
+   # unique node identifier domain.
+    __identifier__ = 'io.jchanvfx.github'
+
+    # initial default node name.
+    NODE_NAME = 'Cable'
+
+    def __init__(self):
+        super(MyCircleNode, self).__init__()
 
 
 
@@ -285,21 +304,47 @@ class MyNode(BaseNode):
 
 
 
-def map_bodies_to_axes(bodies, axes,):
+
+
+def draw_triangle_port(painter, rect, info):
+    painter.save()
+    size = int(rect.height() / 2)
+    triangle = QtGui.QPolygonF()
+    triangle.append(QtCore.QPointF(-size, size))
+    triangle.append(QtCore.QPointF(0.0, -size))
+    triangle.append(QtCore.QPointF(size, size))
+    transform = QtGui.QTransform()
+    transform.translate(rect.center().x(), rect.center().y())
+    port_poly = transform.map(triangle)
+
+    color = QtGui.QColor(*info['color']) if not info['hovered'] else QtGui.QColor(255, 255, 0)
+    border_color = QtGui.QColor(*info['border_color'])
+
+    pen = QtGui.QPen(border_color, 2)
+    pen.setJoinStyle(QtCore.Qt.MiterJoin)
+    painter.setPen(pen)
+    painter.setBrush(color)
+    painter.drawPolygon(port_poly)
+    painter.restore()
+
+
+
+def map_bodies_to_axes(bodies, axes):
     mapping = {}
     unmatched_bodies = set(bodies)  # Start with all bodies as unmatched
 
     for axis in axes:
-        found = False  # Flag to indicate if a match was found
+        axis_name = axis['Name']
+        mapping[axis_name] = []  # Initialize each axis entry as an empty list
         for body in bodies:
-            if body in axis['Name']:  # Assume axis is a dictionary with 'Name' key
-                mapping[axis['Name']] = body
-                if body in unmatched_bodies:
-                    unmatched_bodies.remove(body)  # Remove matched body from unmatched set
-                found = True
-                break  # Stop searching once a match is found
-        if not found:  # Only set to "" if no bodies matched this axis
-            mapping[axis['Name']] = ""
+            if body in axis_name:
+                mapping[axis_name].append(body)  # Append the body to the list for this axis
+                unmatched_bodies.discard(body)  # Remove matched body from unmatched set
+
+    # Remove empty lists: only if you do not want to keep axes with no matched bodies
+    for key in list(mapping.keys()):
+        if not mapping[key]:
+            del mapping[key]
 
     return mapping, list(unmatched_bodies)
     
@@ -336,7 +381,8 @@ def generate_force_mappings(data):
             "start": start,
             "end": end,
             "P1": item['P1'],
-            "P2": item['P2']
+            "P2": item['P2'],
+            "ForceType": "push"
         }
         
         force_mappings.append(force_mapping)
@@ -388,7 +434,24 @@ def add_ForcesForDefaultAxis(catia_app: CatiaApp, DefaultDummyData):
                     # Check if the force is already in the list before appending
                     if not any(f["force_name"] == force["force_name"] for f in body["InForces"]):
                         body["InForces"].append(force)
+
     
+   # Then handle forces associated with cables
+    for cable in DefaultDummyData["Cables"]:
+        cableName = cable["CableName"]
+        
+        for force in force_maps:
+            start = force['start']
+            end = force['end']
+            forcename = force['force_name']
+            
+            # Allocate outgoing forces to cables
+            if cableName == start:
+                
+                cable["OutForces"].append(force)
+                print(f"######### Cable: {cableName} ---> Outgoing Force: {forcename}")
+            
+        
     return DefaultDummyData
      
 
@@ -429,7 +492,10 @@ def add_CablesSystem(catia_app: CatiaApp, DefaultDummyData):
                     "x": p2[0],
                     "y": p2[1],
                     "z": p2[2]
-                }
+                },
+                "OutForces": [
+
+                ]
             })
 
     return DefaultDummyData
@@ -503,7 +569,29 @@ def setup_and_connect_nodes(graph, DefaultDummyData, initial_y=100):
     node_dict = {}  # To store created nodes with their names as keys
     initial_x = 200
     unnamed_initial_y = initial_y  # Separate y-coordinate for bodies without a named axis system
+    x_offset = -800  # Distance to place cable nodes to the left of the body node
+    ####### Draw the diagram for the cable
+    
+    for cable  in DefaultDummyData["Cables"]:
+        cableName = cable["CableName"]
+        cableNode = graph.create_node('io.jchanvfx.github.MyCircleNode', name=cableName, 
+                                              pos=(initial_x+ x_offset, initial_y) , 
+                                              text_color='#FFFFFF')
+        for force in cable.get("OutForces", []):
+                    out_port_name = f"Out - {force['force_name']}"
+                    cableNode.add_output(out_port_name)
+        
+         # Add the created node to node_dict
+        node_dict[cableName] = cableNode
 
+        
+
+
+
+
+
+
+    ##### Draw The Diagram for the Axis system 
     for data in DefaultDummyData["AxisSystem"]:
         axis_system_name = data["AxisSystem_Name"]
         nodes_in_backdrop = []  # To store nodes that will be wrapped by the backdrop
@@ -515,61 +603,43 @@ def setup_and_connect_nodes(graph, DefaultDummyData, initial_y=100):
             # Create a backdrop for named axis systems
             axis_backdrop = graph.create_node('nodeGraphQt.nodes.BackdropNode', name=axis_system_name, pos=(initial_x, current_y))
 
+        node_y_offset = 0  # Incremental offset for nodes within the same backdrop
         for body in data["Bodies"]:
-
             number_of_Outforces = len(body.get("OutForces", []))
-            number_of_Inforces =len(body.get("InForces", [])) 
+            number_of_Inforces = len(body.get("InForces", [])) 
 
             if body["name"]:
                 body_name = body["name"]
+                # Adjust node position within backdrop based on offset
                 body_node = graph.create_node('io.github.jchanvfx.MyNode', name=body_name, 
-                                              pos=(1400, current_y) if not axis_system_name else (initial_x, current_y), 
+                                              pos=(initial_x, current_y + node_y_offset), 
                                               text_color='#FFFFFF')
                 node_dict[body_name] = body_node  # Store the node reference
 
-                if axis_system_name:
-                    nodes_in_backdrop.append(body_node)  # Add to backdrop if part of a named system
+                nodes_in_backdrop.append(body_node)  # Add to backdrop if part of a named system
 
+        
                 # Add input and output ports
+                for inforce in body.get("InForces", []):
+                    in_port_name = f"IN - {inforce['force_name']}"
+                    body_node.add_input(in_port_name, painter_func=draw_triangle_port)
+                
 
-                # Add 'In Force' ports
-                if number_of_Inforces > 0:
-                    for inforce in body.get("InForces", []):
-
-
-                        in_port_name = f" IN - {inforce['force_name']}"
-                        body_node.add_input(in_port_name)
-                else:
-                    # Add a default 'In Force' port if there are no incoming forces
-                    body_node.add_input("Default_InForce")
-
-                # Add 'Out Force' ports based on the number of outgoing forces
-                if number_of_Outforces > 0:
-                    for force in body.get("OutForces", []):
-                        outforceName = f"""  Out - {force['force_name']}"""
-                        body_node.add_output(outforceName)
-                else:
-                     body_node.add_output("Default_OutForce")
-
-
-              
+                for force in body.get("OutForces", []):
+                    out_port_name = f"Out - {force['force_name']}"
+                    body_node.add_output(out_port_name)
 
                 # Adjust vertical position for next node
-                if axis_system_name:
-                    initial_y += 200
-                else:
-                    unnamed_initial_y += 200
+                node_y_offset += 200  # Adjust spacing per node
 
         if axis_system_name and nodes_in_backdrop:
             axis_backdrop.wrap_nodes(nodes_in_backdrop)
-            initial_y += 100  # Additional space after each backdrop
+            # Reset initial_y below the backdrop for the next set of nodes or backdrops
+            initial_y = max(current_y + node_y_offset + 100, unnamed_initial_y)  # Ensure spacing after the last backdrop
 
-          # get the nodes menu.
-
-    nodes_menu = graph.get_context_menu('nodes')        # here we add override the context menu for "io.github.jchanvfx.FooNode".
-    nodes_menu.add_command('Test',
-                           func=test_func,
-                           node_type='io.github.jchanvfx.MyNode')
+    # Context menu addition, seems misplaced here, ensure this is intended to be within the function
+    nodes_menu = graph.get_context_menu('nodes')
+    nodes_menu.add_command('Test', func=lambda: print("Test function executed"), node_type='io.github.jchanvfx.MyNode')
 
     print(node_dict)
 
@@ -583,6 +653,34 @@ def setup_and_connect_nodes(graph, DefaultDummyData, initial_y=100):
                 end_node = node_dict.get(force["end"])
                 if start_node and end_node:
                     start_node.set_output(0, end_node.input(0))
+
+
+
+   
+    # Connect the cable to the body based on OutForces
+    for cable in DefaultDummyData["Cables"]:
+        cableName = cable["CableName"]
+        cableNode = node_dict.get(cableName)  # Retrieve the cable node from node_dict
+    
+        if "OutForces" in cable:
+            for force in cable["OutForces"]:
+                targetName = force['end']  # The name of the node this cable should connect to
+                targetNode = node_dict.get(targetName)  # Retrieve the target node from node_dict
+    
+                if cableNode and targetNode:
+                    # Connect the first output of the cable node to the first input of the target node
+                    cableNode.set_output(0, targetNode.input(0))
+
+                    #graph.connect_ports(cableNode.outputs[0], targetNode.inputs[0])
+                    print(f"Connected {cableName} to {targetName}")
+                else:
+                    if not cableNode:
+                        print(f"Warning: Cable node named '{cableName}' not found.")
+                    if not targetNode:
+                        print(f"Warning: Target node named '{targetName}' not found.")
+
+
+
 
 
   
@@ -616,45 +714,67 @@ if __name__ == '__main__':
 
     AxisBody_map =  map_bodies_to_axes(catia.get_displayed_body_names(), catia.get_displayed_axis_systems())
 
-   # Prepare the AxisSystem entries based on AxisBody_map[0]
-    axis_systems = [
-    {
-        "AxisSystem_Name": axis_name,
-        "AxisCoordination": {
-            "origin": [124.1, 4541.5, 454],
-            "transformation matrix": [[1.1, 2.2, 3.3], [4.4, 5.5, 6.6], [7.7, 8.8, 9.9]]
-        },
-        "Bodies": [
+    print(json.dumps( AxisBody_map, indent=2))
+ 
+
+
+    axis_systems = []
+
+# Loop through each axis and associated bodies from AxisBody_map[0]
+    for axis_name, bodies in AxisBody_map[0].items():
+        # Prepare a list of body dictionaries for this axis
+        body_details = [
             {
-                "name": body_name,
+                "name": body,
                 "mass": {"Nominal": "", "Minimum": "", "Maximum": ""},
                 "COG": {"coordinates": []},
-                "Spring": {"name": "example_spring", "stiffness": 0.0, "rls_angle": 0.0, "moment_arm_ratio": 0.0, "installed_torque": 0.0, "SpringType": ""},
+                "Spring": {
+                    "name": "example_spring",
+                    "stiffness": 0.0,
+                    "rls_angle": 0.0,
+                    "moment_arm_ratio": 0.0,
+                    "installed_torque": 0.0,
+                    "SpringType": ""
+                },
                 "OutForces": [],
-                "InForces": [],
-                "ForceType": "push"
+                "InForces": []
             }
-        ] if body_name else []
-    } for axis_name, body_name in AxisBody_map[0].items() if body_name
-]
+            for body in bodies  # Assuming bodies is a list of body names
+        ]
 
-    # Add unique AxisSystem entries for each body listed in AxisBody_map[1]
-    for body_name in AxisBody_map[1]:
-     axis_systems.append({
-         "AxisSystem_Name": "",  # No specific name for the axis system
-         "AxisCoordination": None,  # No coordination data
-         "Bodies": [
-             {
-                 "name": body_name,
-                 "mass": {"Nominal": "", "Minimum": "", "Maximum": ""},
-                 "COG": {"coordinates": []},
-                 "Spring": {"name": "example_spring", "stiffness": 0.0, "rls_angle": 0.0, "moment_arm_ratio": 0.0, "installed_torque": 0.0, "SpringType": ""},
-                 "OutForces": [],
-                 "InForces": [],
-                 "ForceType": "push"
-             }
-         ]
-     })
+        # Append the axis system details into the axis_systems list
+        axis_systems.append({
+            "AxisSystem_Name": axis_name,
+            "AxisCoordination": {
+                "origin": [124.1, 4541.5, 454],
+                "transformation matrix": [[1.1, 2.2, 3.3], [4.4, 5.5, 6.6], [7.7, 8.8, 9.9]]
+            },
+            "Bodies": body_details
+        })
+
+# Add unique AxisSystem entries for each body listed in AxisBody_map[1]
+    # for body_name in AxisBody_map[1]:
+    #     axis_systems.append({
+    #         "AxisSystem_Name": "",  # No specific name for the axis system
+    #         "AxisCoordination": None,  # No coordination data
+    #         "Bodies": [
+    #             {
+    #                 "name": body_name,
+    #                 "mass": {"Nominal": "", "Minimum": "", "Maximum": ""},
+    #                 "COG": {"coordinates": []},
+    #                 "Spring": {
+    #                     "name": "example_spring",
+    #                     "stiffness": 0.0,
+    #                     "rls_angle": 0.0,
+    #                     "moment_arm_ratio": 0.0,
+    #                     "installed_torque": 0.0,
+    #                     "SpringType": ""
+    #                 },
+    #                 "OutForces": [],
+    #                 "InForces": []
+    #             }
+    #         ]
+    #     })
 
     DefaultDummyData = {
     "Cables": [
@@ -663,11 +783,13 @@ if __name__ == '__main__':
             "mass": {"max": 0, "nominal": 0, "min": 0},
             "length": 0,
             "p1": {"x": 0.0, "y": 0.0, "z": 0.0},
-            "p2": {"x": 0.0, "y": 0.0, "z": 0.0}
+            "p2": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "OutForces":[]
         }
     ],
     "AxisSystem": axis_systems
-    }
+}
+
    
     
    
@@ -686,8 +808,8 @@ if __name__ == '__main__':
     graph = NodeGraph()
 
     # register the  node class.
-    graph.register_nodes([MyNode])
-
+    graph.register_nodes([MyNode,MyCircleNode])
+    
 
 
     print("Registered Nodes:", graph.registered_nodes())
